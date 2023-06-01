@@ -1,9 +1,8 @@
 """
 Vertically partitioned SplitNN implementation
 
-Worker 1 has two segments of the model and the Images
-
-Worker 2 has a segment of the model and the Labels
+Clients own vertically partitioned data
+Server owns the labels
 """
 
 
@@ -15,86 +14,54 @@ hook = sy.TorchHook(torch)
 
 
 class SplitNN:
-    def __init__(self, models, optimizers):
+    def __init__(self, models, server, data_owners, optimizers):
         self.models = models
+        self.server = server
+        self.data_owners = data_owners
         self.optimizers = optimizers
 
-        self.data = []
-        self.remote_tensors = []
-
-    def forward(self, x):
-        data = []
-        remote_tensors = []
-
-        data.append(models[0](x))
-
-        if data[-1].location == models[1].location:
-            remote_tensors.append(data[-1].detach().requires_grad_())
-        else:
-            remote_tensors.append(
-                data[-1].detach().move(models[1].location).requires_grad_()
+    def predict(self, data_pointer):
+            
+        #individual client's output upto their respective cut layer
+        client_output = {}
+        
+        #outputs that is moved to server and subjected to concatenate for server input
+        remote_outputs = []
+        
+        #iterate over each client and pass thier inputs to respective model segment and send outputs to server
+        for owner in self.data_owners:
+            client_output[owner.id] = self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28]))
+            remote_outputs.append(
+                client_output[owner.id].move(self.server)
             )
+        
+        #concat outputs from all clients at server's location
+        server_input = torch.cat(remote_outputs, 1)
+        
+        #pass concatenated output from server's model segment
+        pred = self.models["server"](server_input)
+        
+        return pred
 
-        i = 1
-        while i < (len(models) - 1):
-            data.append(models[i](remote_tensors[-1]))
+    def train(self, data_pointer, target):
 
-            if data[-1].location == models[i + 1].location:
-                remote_tensors.append(data[-1].detach().requires_grad_())
-            else:
-                remote_tensors.append(
-                    data[-1].detach().move(models[i + 1].location).requires_grad_()
-                )
-
-            i += 1
-
-        data.append(models[i](remote_tensors[-1]))
-
-        self.data = data
-        self.remote_tensors = remote_tensors
-
-        return data[-1]
-
-    def backward(self):
-        data = self.data
-        remote_tensors = self.remote_tensors
-
-        i = len(models) - 2
-        while i > -1:
-            if remote_tensors[i].location == data[i].location:
-                grads = remote_tensors[i].grad.copy()
-            else:
-                grads = remote_tensors[i].grad.copy().move(data[i].location)
-
-            data[i].backward(grads)
-            i -= 1
-
-    def zero_grads(self):
+        #make grads zero
         for opt in self.optimizers:
             opt.zero_grad()
-
-    def step(self):
+        
+        #predict the output
+        pred = self.predict(data_pointer)
+        
+        #calculate loss
+        criterion = nn.NLLLoss()
+        loss = criterion(pred, target.reshape(-1, 64)[0])
+        
+        #backpropagate
+        loss.backward()
+        
+        #optimization step
         for opt in self.optimizers:
             opt.step()
+            
+        return loss.detach().get()
 
-
-# Define our model segments
-
-INPUT_SIZE = 784
-hidden_sizes = [128, 640]
-OUTPUT_SIZE = 10
-
-models = [
-    nn.Sequential(
-        nn.Linear(INPUT_SIZE, hidden_sizes[0]),
-        nn.ReLU(),
-        nn.Linear(hidden_sizes[0], hidden_sizes[1]),
-        nn.ReLU(),
-    ),
-    nn.Sequential(nn.Linear(hidden_sizes[1], OUTPUT_SIZE), nn.LogSoftmax(dim=1)),
-]
-
-# # Send Model Segments to model locations
-# model_locations = [worker1, worker2]
-# for model, location in zip(models, model_locations):
-#     model.send(location)
