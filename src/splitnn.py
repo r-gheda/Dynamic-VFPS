@@ -19,6 +19,11 @@ class SplitNN:
         self.server = server
         self.data_owners = data_owners
         self.optimizers = optimizers
+        self.selected = {}
+        self.selected[server.id] = True
+        for owner in data_owners:
+            self.selected[owner.id] = True
+        self.selected[data_owners[0].id] = False
 
     def predict(self, data_pointer):
             
@@ -30,10 +35,12 @@ class SplitNN:
         
         #iterate over each client and pass thier inputs to respective model segment and send outputs to server
         for owner in self.data_owners:
-            client_output[owner.id] = self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28]))
-            remote_outputs.append(
-                client_output[owner.id].move(self.server)
-            )
+            if self.selected[owner.id]:
+                remote_outputs.append(
+                    self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28])).move(self.server)
+                )
+            else:
+                remote_outputs.append(torch.zeros([64, 64]).send(self.server))
         
         #concat outputs from all clients at server's location
         server_input = torch.cat(remote_outputs, 1)
@@ -47,7 +54,7 @@ class SplitNN:
 
         #make grads zero
         for opt in self.optimizers:
-            opt.zero_grad()
+            opt[0].zero_grad()
         
         #predict the output
         pred = self.predict(data_pointer)
@@ -61,7 +68,8 @@ class SplitNN:
         
         #optimization step
         for opt in self.optimizers:
-            opt.step()
+            if self.selected[opt[1].id]:
+                opt[0].step()
             
         return loss.detach().get()
 
