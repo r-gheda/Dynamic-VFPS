@@ -9,6 +9,10 @@ Server owns the labels
 import syft as sy
 import torch
 from torch import nn
+import torch.distributed as dist
+import numpy as np
+
+from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma
 
 hook = sy.TorchHook(torch)
 
@@ -24,6 +28,14 @@ class SplitNN:
         for owner in data_owners:
             self.selected[owner.id] = True
         self.selected[data_owners[0].id] = False
+
+        self.rank = None
+        self.n_features = None
+        self.world_size = None 
+        self.k = None
+        self.data = None
+
+        self.classes = None
 
     def predict(self, data_pointer):
             
@@ -73,3 +85,36 @@ class SplitNN:
             
         return loss.detach().get()
 
+    def knn_mi_estimator(self, distributed_data, k):
+        class_data = split_samples_by_class(distributed_data)
+        aggregate_distances = {}
+        distances = {}
+    
+        id1 = 0
+        for data_ptr, target in distributed_data:
+            id2 = 0
+            for data_ptr2, target2 in distributed_data:
+                remote_partials = []
+                for owner in self.data_owners:
+                    if (owner, id1, id2) in distances:
+                        part_dist = distances[(owner, id1, id2)]
+                    else:
+                        part_dist = torch.cdist(data_ptr[owner.id], data_ptr2[owner.id])
+                    distances[(owner, id1, id2)] = part_dist
+                    remote_partials.append(part_dist.move(self.server))
+                aggregate_distances[(id1, id2)] = 0
+                for rp in remote_partials:
+                    aggregate_distances[(id1, id2)] += torch.sum(rp)
+                id2 += 1
+                if id2 > 3:
+                    break
+            id1 += 1
+
+        mi = 0
+        id1 = 0
+        for data_ptr, target in distributed_data:
+            kth_nearest = get_kth_dist(id1, class_data[target], aggregate_distances, k)
+            m = [0 for i in range(3) if aggregate_distances[(id1, i)] < kth_nearest]
+            mi += digamma(len(distributed_data)) + digamma(len(class_data)) + digamma(k) - digamma(len(m))
+            id1 += 1
+        return mi / len(distributed_data)
