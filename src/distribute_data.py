@@ -1,3 +1,7 @@
+import random
+
+DATA_GENERATION_PROBABILITY = 0.01
+
 class Distribute_MNIST:
     """
   This class distribute each image among different workers
@@ -40,6 +44,7 @@ class Distribute_MNIST:
         """
 
         self.labels = []
+        self.distributed_subdata = []
 
         # iterate over each batch of dataloader for, 1) spliting image 2) sending to VirtualWorker
         for images, labels in self.data_loader:
@@ -78,3 +83,8 @@ class Distribute_MNIST:
         
         return len(self.data_loader)-1
             
+    def generate_subdata(self):
+        self.distributed_subdata = []
+        for data_ptr, target in self:
+            if random.random() <= DATA_GENERATION_PROBABILITY:
+                self.distributed_subdata.append((data_ptr, target))
