@@ -18,7 +18,7 @@ hook = sy.TorchHook(torch)
 
 
 class SplitNN:
-    def __init__(self, models, server, data_owners, optimizers):
+    def __init__(self, models, server, data_owners, optimizers, padding_method="zeros"):
         self.models = models
         self.server = server
         self.data_owners = data_owners
@@ -29,6 +29,8 @@ class SplitNN:
             self.selected[owner.id] = True
         self.selected[data_owners[0].id] = False
 
+        self.PADDING_METHOD = padding_method
+
         self.rank = None
         self.n_features = None
         self.world_size = None 
@@ -37,22 +39,34 @@ class SplitNN:
 
         self.classes = None
 
-    def predict(self, data_pointer):
-            
-        #individual client's output upto their respective cut layer
-        client_output = {}
-        
+    def generate_data(self, owner, remote_outputs):
+        res = None
+        if self.PADDING_METHOD == "zeros":
+            res = torch.zeros([64, 64])
+        else:
+            raise TypeError('Padding method not supported')
+        return res
+
+    def predict(self, data_pointer):        
         #outputs that is moved to server and subjected to concatenate for server input
         remote_outputs = []
         
         #iterate over each client and pass thier inputs to respective model segment and send outputs to server
+        missing = []
+        counter = 0
         for owner in self.data_owners:
             if self.selected[owner.id]:
                 remote_outputs.append(
                     self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28])).move(self.server)
                 )
             else:
-                remote_outputs.append(torch.zeros([64, 64]).send(self.server))
+                missing.append(counter)
+            counter += 1
+        
+        for miss_index in missing:
+            remote_outputs.insert(
+                miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs).send(self.server)
+            )
         
         #concat outputs from all clients at server's location
         server_input = torch.cat(remote_outputs, 1)
