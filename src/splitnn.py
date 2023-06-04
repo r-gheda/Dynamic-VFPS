@@ -116,3 +116,31 @@ class SplitNN:
             mi += digamma(len(distributed_data)) + digamma(len(class_data)) + digamma(k) - digamma(len(m))
             id1 += 1
         return mi / len(distributed_data)
+    
+    def find_scores(self, distributed_data, k, n_tests=100):
+        self.scores = {}
+        for _ in range(n_tests):
+            # random select from self.data_owners
+            test_instance = self.test_gen()
+            # get a split of distributed data with test_instance
+            
+            # ??? how to get the split of distributed data
+            
+            mi = self.knn_mi_estimator(self, distributed_data_split, k)
+            for owner in test_instance:
+                if owner not in self.scores:
+                    self.scores[owner] = 0
+                self.scores[owner] += mi
+        self.scores = {k: v / n_tests for k, v in self.scores.items()}
+        return self.scores
+    
+    def test_gen(self, p=0.5):
+        # random generate a test based on selection probability p
+        test_list = []
+        while len(test_list) < 1: # empty test is not allowed
+            for owner in self.data_owners:
+                if np.random.rand() > p:
+                    test_list.append(owner)
+                else:
+                    pass
+        return test_list
