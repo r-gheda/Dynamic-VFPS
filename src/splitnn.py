@@ -106,8 +106,6 @@ class SplitNN:
                 for rp in remote_partials:
                     aggregate_distances[(id1, id2)] += torch.sum(rp)
                 id2 += 1
-                if id2 > 3:
-                    break
             id1 += 1
 
         mi = 0
