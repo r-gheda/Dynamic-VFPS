@@ -112,7 +112,7 @@ class SplitNN:
         id1 = 0
         for data_ptr, target in distributed_data:
             kth_nearest = get_kth_dist(id1, class_data[target], aggregate_distances, k)
-            m = [0 for i in range(3) if aggregate_distances[(id1, i)] < kth_nearest]
+            m = [0 for i in range(len(distributed_data)) if aggregate_distances[(id1, i)] < kth_nearest]
             mi += digamma(len(distributed_data)) + digamma(len(class_data)) + digamma(k) - digamma(len(m))
             id1 += 1
         return mi / len(distributed_data)
