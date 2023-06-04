@@ -15,7 +15,7 @@ import numpy as np
 from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma
 
 hook = sy.TorchHook(torch)
-
+DEFAULT_METHOD = "zeros"
 
 class SplitNN:
     def __init__(self, models, server, data_owners, optimizers, padding_method="zeros"):
@@ -27,9 +27,13 @@ class SplitNN:
         self.selected[server.id] = True
         for owner in data_owners:
             self.selected[owner.id] = True
-        self.selected[data_owners[0].id] = False
 
         self.PADDING_METHOD = padding_method
+        self.latest = {}
+        self.means = {}
+        self.counters = {}
+        for owner in self.data_owners:
+            self.counters[owner.id] = 0
 
         self.rank = None
         self.n_features = None
@@ -41,10 +45,18 @@ class SplitNN:
 
     def generate_data(self, owner, remote_outputs):
         res = None
-        if self.PADDING_METHOD == "zeros":
+        if self.PADDING_METHOD == "latest":
+            if owner.id in self.latest:
+                self.PADDING_METHOD = DEFAULT_METHOD
+            res = self.latest[owner.id]
+        elif self.PADDING_METHOD == "mean": 
+            if owner.id in self.means:
+                self.PADDING_METHOD = DEFAULT_METHOD
+            res = self.means[owner.id]
+        elif self.PADDING_METHOD == "zeros":
             res = torch.zeros([64, 64])
         else:
-            raise TypeError('Padding method not supported')
+            raise Exception("Padding method not supported")
         return res
 
     def predict(self, data_pointer):        
@@ -59,10 +71,22 @@ class SplitNN:
                 remote_outputs.append(
                     self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28])).move(self.server)
                 )
+
+                # latest padding update
+                self.latest[owner.id] = remote_outputs[-1]
+
+                # mean padding update
+                self.counters[owner.id] += 1
+                if not owner.id in self.means:
+                    self.means[owner.id] = remote_outputs[-1]
+                else:
+                    self.means[owner.id] = torch.div(torch.add(torch.mul(self.means[owner.id], self.counters[owner.id]-1), remote_outputs[-1]), float(self.counters[owner.id]))
+            
             else:
                 missing.append(counter)
             counter += 1
         
+        # generate data for missing clients
         for miss_index in missing:
             remote_outputs.insert(
                 miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs).send(self.server)
