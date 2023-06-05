@@ -15,10 +15,10 @@ import numpy as np
 from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma
 
 hook = sy.TorchHook(torch)
-
+DEFAULT_METHOD = "zeros"
 
 class SplitNN:
-    def __init__(self, models, server, data_owners, optimizers):
+    def __init__(self, models, server, data_owners, optimizers, padding_method="zeros"):
         self.models = models
         self.server = server
         self.data_owners = data_owners
@@ -28,6 +28,13 @@ class SplitNN:
         for owner in data_owners:
             self.selected[owner.id] = True
 
+        self.PADDING_METHOD = padding_method
+        self.latest = {}
+        self.means = {}
+        self.counters = {}
+        for owner in self.data_owners:
+            self.counters[owner.id] = 0
+
         self.rank = None
         self.n_features = None
         self.world_size = None 
@@ -35,25 +42,58 @@ class SplitNN:
         self.data = None
 
         self.classes = None
-
+        
         self.k = 1
 
-    def predict(self, data_pointer):
-            
-        #individual client's output upto their respective cut layer
-        client_output = {}
-        
+
+    def generate_data(self, owner, remote_outputs):
+        res = None
+        if self.PADDING_METHOD == "latest":
+            if owner.id in self.latest:
+                self.PADDING_METHOD = DEFAULT_METHOD
+            res = self.latest[owner.id]
+        elif self.PADDING_METHOD == "mean": 
+            if owner.id in self.means:
+                self.PADDING_METHOD = DEFAULT_METHOD
+            res = self.means[owner.id]
+        elif self.PADDING_METHOD == "zeros":
+            res = torch.zeros([64, 64])
+        else:
+            raise Exception("Padding method not supported")
+        return res
+
+    def predict(self, data_pointer):     
         #outputs that is moved to server and subjected to concatenate for server input
         remote_outputs = []
         
         #iterate over each client and pass thier inputs to respective model segment and send outputs to server
+        missing = []
+        counter = 0
         for owner in self.data_owners:
             if self.selected[owner.id]:
                 remote_outputs.append(
                     self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28])).move(self.server)
                 )
+
+                # latest padding update
+                self.latest[owner.id] = remote_outputs[-1]
+
+                # mean padding update
+                self.counters[owner.id] += 1
+                if not owner.id in self.means:
+                    self.means[owner.id] = remote_outputs[-1]
+                else:
+                    self.means[owner.id] = torch.div(torch.add(torch.mul(self.means[owner.id], self.counters[owner.id]-1), remote_outputs[-1]), float(self.counters[owner.id]))
+            
             else:
-                remote_outputs.append(torch.zeros([64, 64]).send(self.server))
+                missing.append(counter)
+            counter += 1
+        
+        # generate data for missing clients
+        for miss_index in missing:
+            remote_outputs.insert(
+                miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs).send(self.server)
+            )
         
         #concat outputs from all clients at server's location
         server_input = torch.cat(remote_outputs, 1)
