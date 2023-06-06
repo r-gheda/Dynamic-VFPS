@@ -18,7 +18,7 @@ hook = sy.TorchHook(torch)
 DEFAULT_METHOD = "zeros"
 
 class SplitNN:
-    def __init__(self, models, server, data_owners, optimizers, padding_method="zeros"):
+    def __init__(self, models, server, data_owners, optimizers, padding_method=DEFAULT_METHOD):
         self.models = models
         self.server = server
         self.data_owners = data_owners
@@ -35,14 +35,9 @@ class SplitNN:
         for owner in self.data_owners:
             self.counters[owner.id] = 0
 
-        self.rank = None
-        self.n_features = None
-        self.world_size = None 
-        self.k = None
-        self.data = None
-
         self.classes = None
-
+        self.k = 1
+        
     def generate_data(self, owner, remote_outputs):
         res = None
         if self.PADDING_METHOD == "latest":
@@ -86,7 +81,6 @@ class SplitNN:
                 missing.append(counter)
             counter += 1
         
-        # generate data for missing clients
         for miss_index in missing:
             remote_outputs.insert(
                 miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs).send(self.server)
@@ -123,7 +117,7 @@ class SplitNN:
             
         return loss.detach().get()
 
-    def knn_mi_estimator(self, distributed_data, k):
+    def knn_mi_estimator(self, distributed_data):
         class_data = split_samples_by_class(distributed_data)
         aggregate_distances = {}
         distances = {}
@@ -131,9 +125,11 @@ class SplitNN:
         id1 = 0
         for data_ptr, target in distributed_data:
             id2 = 0
-            for data_ptr2, target2 in distributed_data:
+            for data_ptr2, _ in distributed_data:
                 remote_partials = []
                 for owner in self.data_owners:
+                    if not owner.id in data_ptr:
+                        continue
                     if (owner, id1, id2) in distances:
                         part_dist = distances[(owner, id1, id2)]
                     else:
@@ -149,8 +145,56 @@ class SplitNN:
         mi = 0
         id1 = 0
         for data_ptr, target in distributed_data:
-            kth_nearest = get_kth_dist(id1, class_data[target], aggregate_distances, k)
+            kth_nearest = get_kth_dist(id1, class_data[target], aggregate_distances, self.k)
             m = [0 for i in range(len(distributed_data)) if aggregate_distances[(id1, i)] < kth_nearest]
-            mi += digamma(len(distributed_data)) + digamma(len(class_data)) + digamma(k) - digamma(len(m))
+            mi += digamma(len(distributed_data)) + digamma(len(class_data)) + digamma(self.k) - digamma(len(m))
             id1 += 1
         return mi / len(distributed_data)
+    
+    def group_testing(self, distributed_data, k, n_tests=100):
+        scores = self.get_scores(distributed_data, n_tests)
+
+        for _ in range(k):
+            max_owner = max(scores, key=scores.get)
+            self.selected[max_owner] = True
+            scores.pop(max_owner)
+        
+        for owner in scores:
+            self.selected[owner] = False
+        
+        return
+
+    def get_scores(self, distributed_data, n_tests=100):
+        self.scores = {}
+        for _ in range(n_tests):
+            # random select from self.data_owners
+            test_instance = self.test_gen()
+            
+            distributed_data_split = []
+            for data_ptr, target in distributed_data:
+                distributed_data_split.append( (data_ptr.copy(), target) )
+
+            for owner in self.data_owners:
+                if not owner in test_instance:
+                    for data_ptr, _ in distributed_data_split:
+                        data_ptr.pop(owner.id)
+            
+            mi = self.knn_mi_estimator(distributed_data_split)
+            for owner in test_instance:
+                if owner not in self.scores:
+                    self.scores[owner] = 0
+                self.scores[owner] += mi
+        
+        self.scores = {k: v / n_tests for k, v in self.scores.items()}
+        return self.scores
+    
+    def test_gen(self, p=0.5):
+        # random generate a test based on selection probability p
+        test_list = []
+
+        while len(test_list) < 1: # empty test is not allowed
+            for owner in self.data_owners:
+                if np.random.rand() < p:
+                    test_list.append(owner)
+
+        return test_list
