@@ -11,11 +11,15 @@ import torch
 from torch import nn
 import torch.distributed as dist
 import numpy as np
+import random
+import time
 
 from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma
 
 hook = sy.TorchHook(torch)
 DEFAULT_METHOD = "zeros"
+MEAN_DELAY = 1
+STD_DELAY = 3
 
 class SplitNN:
     def __init__(self, models, server, data_owners, optimizers, padding_method=DEFAULT_METHOD):
@@ -57,6 +61,7 @@ class SplitNN:
     def predict(self, data_pointer):        
         #outputs that is moved to server and subjected to concatenate for server input
         remote_outputs = []
+        delays = []
         
         #iterate over each client and pass thier inputs to respective model segment and send outputs to server
         missing = []
@@ -66,6 +71,7 @@ class SplitNN:
                 remote_outputs.append(
                     self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28])).move(self.server)
                 )
+                delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
 
                 # latest padding update
                 self.latest[owner.id] = remote_outputs[-1]
@@ -80,11 +86,14 @@ class SplitNN:
             else:
                 missing.append(counter)
             counter += 1
-        
+
         for miss_index in missing:
             remote_outputs.insert(
                 miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs).send(self.server)
             )
+        
+        # wait for all outputs to arrive
+        time.sleep(max(delays))
         
         #concat outputs from all clients at server's location
         server_input = torch.cat(remote_outputs, 1)
@@ -127,6 +136,7 @@ class SplitNN:
             id2 = 0
             for data_ptr2, _ in distributed_data:
                 remote_partials = []
+                delays = []
                 for owner in self.data_owners:
                     if not owner.id in data_ptr:
                         continue
@@ -136,6 +146,9 @@ class SplitNN:
                         part_dist = torch.cdist(data_ptr[owner.id], data_ptr2[owner.id])
                     distances[(owner, id1, id2)] = part_dist
                     remote_partials.append(part_dist.move(self.server))
+                    delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
+                # wait for all partials to arrive
+                time.sleep(max(delays))
                 aggregate_distances[(id1, id2)] = 0
                 for rp in remote_partials:
                     aggregate_distances[(id1, id2)] += torch.sum(rp)
