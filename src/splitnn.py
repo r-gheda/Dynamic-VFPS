@@ -18,11 +18,11 @@ from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma
 
 hook = sy.TorchHook(torch)
 DEFAULT_METHOD = "zeros"
-MEAN_DELAY = 1
-STD_DELAY = 3
+MEAN_DELAY = 0
+STD_DELAY = 0
 
 class SplitNN:
-    def __init__(self, models, server, data_owners, optimizers, padding_method=DEFAULT_METHOD):
+    def __init__(self, models, server, data_owners, optimizers, k=1, n_selected=1, padding_method=DEFAULT_METHOD):
         self.models = models
         self.server = server
         self.data_owners = data_owners
@@ -40,7 +40,9 @@ class SplitNN:
             self.counters[owner.id] = 0
 
         self.classes = None
-        self.k = 1
+        self.k = k
+
+        self.n_selected = n_selected
         
     def generate_data(self, owner, remote_outputs):
         res = None
@@ -164,16 +166,19 @@ class SplitNN:
             id1 += 1
         return mi / len(distributed_data)
     
-    def group_testing(self, distributed_data, k, n_tests=100):
+    def group_testing(self, distributed_data, n_tests=100):
+        self.subdata_length = len(distributed_data)
         scores = self.get_scores(distributed_data, n_tests)
+        self.sorted_scores = []
 
-        for _ in range(k):
+        for idx in range(len(self.data_owners)):
             max_owner = max(scores, key=scores.get)
-            self.selected[max_owner] = True
+            if idx < self.n_selected:
+                self.selected[max_owner] = True
+            else:
+                self.selected[max_owner] = False
+            self.sorted_scores.append(scores[max_owner])
             scores.pop(max_owner)
-        
-        for owner in scores:
-            self.selected[owner] = False
         
         return
 
@@ -211,3 +216,18 @@ class SplitNN:
                     test_list.append(owner)
 
         return test_list
+    
+    def estimate_group_testing(self, removed, added):
+        lo = self.sorted_scores[self.n_selected-1]
+        hi = float('inf')
+        if len(self.sorted_scores) > self.n_selected:
+            hi = self.sorted_scores[self.n_selected]
+        
+        lo = (lo * self.subdata_length - digamma(removed + added)) / (self.subdata_length - removed + added)
+        hi = (hi * self.subdata_length + digamma(removed + added)) / (self.subdata_length - removed + added)
+
+        self.subdata_length = self.subdata_length - removed + added
+        self.sorted_scores[self.n_selected-1] = lo
+        self.sorted_scores[self.n_selected] = hi
+
+        return lo < hi

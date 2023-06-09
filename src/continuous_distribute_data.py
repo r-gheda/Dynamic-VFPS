@@ -109,8 +109,11 @@ class ContinuousDistributeMNIST:
             idx += 1
 
         DATA_UPDATE_PROBABILITY = counter / (len(self) - len(self.distributed_subdata))
-        
+        new_counter = 0
+
         for data_ptr, target in self.left_out:
             if random.random() <= DATA_UPDATE_PROBABILITY:
                 self.distributed_subdata.append((data_ptr, target))
                 self.lifetimes.append(5*random.random())
+                new_counter += 1
+        return (counter, new_counter)
