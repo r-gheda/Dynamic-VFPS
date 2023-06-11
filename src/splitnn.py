@@ -5,6 +5,10 @@ Clients own vertically partitioned data
 Server owns the labels
 """
 
+DEFAULT_METHOD = "zeros"
+MEAN_DELAY = 0
+STD_DELAY = 0
+
 
 import syft as sy
 import torch
@@ -14,21 +18,19 @@ import numpy as np
 import random
 import time
 
-from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma
+from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma, get_sorted_distances
 
 hook = sy.TorchHook(torch)
-DEFAULT_METHOD = "zeros"
-MEAN_DELAY = 0
-STD_DELAY = 0
 
 class SplitNN:
-    def __init__(self, models, server, data_owners, optimizers, k=1, n_selected=1, padding_method=DEFAULT_METHOD):
+    def __init__(self, models, server, data_owners, optimizers, distributed_data, k=1, n_selected=1, padding_method=DEFAULT_METHOD):
         self.models = models
         self.server = server
         self.data_owners = data_owners
         self.optimizers = optimizers
         self.selected = {}
         self.selected[server.id] = True
+        self.dist_data = distributed_data
         for owner in data_owners:
             self.selected[owner.id] = True
 
@@ -43,21 +45,28 @@ class SplitNN:
         self.k = k
 
         self.n_selected = n_selected
+
+        self.Q = 1
+        self.N = len(self.dist_data)
+        self.Nq = {}
+        self.mq = {}
+        #self.aggregated_distances = {}
+        #self.dist_counters = {}
         
     def generate_data(self, owner, remote_outputs):
         res = None
         if self.PADDING_METHOD == "latest":
-            if owner.id in self.latest:
+            if not owner.id in self.latest:
                 self.PADDING_METHOD = DEFAULT_METHOD
-            res = self.latest[owner.id]
-        elif self.PADDING_METHOD == "mean": 
-            if owner.id in self.means:
+            else:
+                res = self.latest[owner.id]
+        if self.PADDING_METHOD == "mean": 
+            if not owner.id in self.means:
                 self.PADDING_METHOD = DEFAULT_METHOD
-            res = self.means[owner.id]
-        elif self.PADDING_METHOD == "zeros":
+            else:
+                res = self.means[owner.id]
+        if self.PADDING_METHOD == "zeros":
             res = torch.zeros([64, 64])
-        else:
-            raise Exception("Padding method not supported")
         return res
 
     def predict(self, data_pointer):        
@@ -128,15 +137,13 @@ class SplitNN:
             
         return loss.detach().get()
 
-    def knn_mi_estimator(self, distributed_data):
-        class_data = split_samples_by_class(distributed_data)
+    def knn_mi_estimator(self):
+        self.class_data = self.dist_data.split_samples_by_class()
         aggregate_distances = {}
         distances = {}
     
-        id1 = 0
-        for data_ptr, target in distributed_data:
-            id2 = 0
-            for data_ptr2, _ in distributed_data:
+        for id1, data_ptr, target in self.dist_data.distributed_subdata:
+            for id2, data_ptr2, _ in self.dist_data.distributed_subdata:
                 remote_partials = []
                 delays = []
                 for owner in self.data_owners:
@@ -149,29 +156,55 @@ class SplitNN:
                     distances[(owner, id1, id2)] = part_dist
                     remote_partials.append(part_dist.move(self.server))
                     delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
-                # wait for all partials to arrive
+                # wait for all partial distances to arrive
                 time.sleep(max(delays))
-                aggregate_distances[(id1, id2)] = 0
+                aggregate_distances[id1, id2] = 0
                 for rp in remote_partials:
-                    aggregate_distances[(id1, id2)] += torch.sum(rp)
-                id2 += 1
-            id1 += 1
+                    aggregate_distances[id1, id2] += torch.sum(rp)
 
         mi = 0
-        id1 = 0
-        for data_ptr, target in distributed_data:
-            kth_nearest = get_kth_dist(id1, class_data[target], aggregate_distances, self.k)
-            m = [0 for i in range(len(distributed_data)) if aggregate_distances[(id1, i)] < kth_nearest]
-            mi += digamma(len(distributed_data)) + digamma(len(class_data)) + digamma(self.k) - digamma(len(m))
-            id1 += 1
-        return mi / len(distributed_data)
-    
-    def group_testing(self, distributed_data, n_tests=100):
-        self.subdata_length = len(distributed_data)
-        scores = self.get_scores(distributed_data, n_tests)
-        self.sorted_scores = []
+        for t in self.class_data:
+            print(len(self.class_data[t]))
+        print('done')
+        for id1, data_ptr, target in self.dist_data.distributed_subdata:
+            self.Nq[target] = len(self.class_data[target])
+            print('class data: ' + str(len(self.class_data[target])))
+            sorted_distances = get_sorted_distances(id, self.class_data[target], aggregate_distances)
+            self.mq[id1] = len([0 for id2, _, _ in self.dist_data.distributed_subdata if (
+                len(sorted_distances) > 0
+            ) and (
+                aggregate_distances[id1, id2] < sorted_distances[max(self.k, len(sorted_distances)-1)]
+            )])
+            for id2, _, _ in self.dist_data.distributed_subdata:
+                print('len' + str(len(sorted_distances)))
+                print('agg:'  + str(aggregate_distances[id1, id2] ) )
+                if len(sorted_distances) > 0:
+                    print('sd:' + str(sorted_distances[min(self.k, len(sorted_distances)-1)]))
+                else:
+                    print('==')
+            print(self.mq[id1])
+            if self.mq[id1] > 0:
+                mi += digamma(self.N) + digamma(self.Nq[target]) + digamma(self.k) - digamma(self.mq[id1])
 
-        for idx in range(len(self.data_owners)):
+        for id1, data_ptr, _ in self.dist_data.distributed_subdata:
+            for id2, data_ptr2, _ in self.dist_data.distributed_subdata:
+                if not (id1, id2) in self.aggregated_distances:
+                    self.aggregated_distances[(id1, id2)] = 0
+                    self.dist_counters[(id1, id2)] = 0
+                self.aggregated_distances[(id1, id2)] = (self.dist_counters[(id1, id2)]*self.aggregated_distances[(id1, id2)] + aggregate_distances[id1, id2] ) / (self.dist_counters[(id1, id2)] + 1)
+                self.dist_counters[(id1, id2)] += 1
+
+        return mi / self.Q
+    
+    def group_testing(self, n_tests=100):
+        self.sorted_scores = []
+        self.aggregated_distances = {}
+        self.dist_counters = {}
+        self.N = len(self.dist_data.distributed_subdata)
+        scores = self.get_scores(n_tests)
+
+        scores_length = len(scores)
+        for idx in range(scores_length):
             max_owner = max(scores, key=scores.get)
             if idx < self.n_selected:
                 self.selected[max_owner] = True
@@ -179,17 +212,24 @@ class SplitNN:
                 self.selected[max_owner] = False
             self.sorted_scores.append(scores[max_owner])
             scores.pop(max_owner)
-        
+
+        self.sorted_distances = {}
+        for id, _, target in self.dist_data.distributed_subdata:
+            self.sorted_distances[id] = get_sorted_distances(id, self.class_data[target], self.aggregated_distances)       
         return
 
-    def get_scores(self, distributed_data, n_tests=100):
+    def get_scores(self, n_tests=10):
+        self.n_tests_per_owner = {}
+        for owner in self.data_owners:
+            self.n_tests_per_owner[owner.id] = 0
+
         self.scores = {}
         for _ in range(n_tests):
             # random select from self.data_owners
-            test_instance = self.test_gen()
+            test_instance = self.test_gen(1)
             
             distributed_data_split = []
-            for data_ptr, target in distributed_data:
+            for id, data_ptr, target in self.dist_data.distributed_subdata:
                 distributed_data_split.append( (data_ptr.copy(), target) )
 
             for owner in self.data_owners:
@@ -197,11 +237,12 @@ class SplitNN:
                     for data_ptr, _ in distributed_data_split:
                         data_ptr.pop(owner.id)
             
-            mi = self.knn_mi_estimator(distributed_data_split)
+            mi = self.knn_mi_estimator()
             for owner in test_instance:
+                self.n_tests_per_owner[owner.id] += 1
                 if owner not in self.scores:
-                    self.scores[owner] = 0
-                self.scores[owner] += mi
+                    self.scores[owner.id] = 0
+                self.scores[owner.id] += mi
         
         self.scores = {k: v / n_tests for k, v in self.scores.items()}
         return self.scores
@@ -217,17 +258,29 @@ class SplitNN:
 
         return test_list
     
-    def estimate_group_testing(self, removed, added):
-        lo = self.sorted_scores[self.n_selected-1]
-        hi = float('inf')
-        if len(self.sorted_scores) > self.n_selected:
-            hi = self.sorted_scores[self.n_selected]
+    def is_group_testing_needed(self, removed, added):
+        for owner in self.data_owners:
+            if not owner.id in self.scores:
+                continue
+            for id1, data_ptr, _ in removed:
+                self.scores[owner.id] += self.n_tests_per_owner[owner.id]*self.Q
+                for id2, _, _ in self.dist_data.distributed_subdata:
+                    if self.aggregated_distances[id1] < self.sorted_distances[id1][self.k-1]:
+                        self.scores[owner.id] -= (self.sorted_distances[id2][self.k] - self.sorted_distances[id2][self.k-1])*self.n_tests_per_owner[owner.id]*self.Q / ( self.sorted_distances[id2][-1] / self.N)
+            for _ in range(len(added)):
+                self.scores[owner.id] -= self.n_tests_per_owner[owner.id]*self.Q
         
-        lo = (lo * self.subdata_length - digamma(removed + added)) / (self.subdata_length - removed + added)
-        hi = (hi * self.subdata_length + digamma(removed + added)) / (self.subdata_length - removed + added)
-
-        self.subdata_length = self.subdata_length - removed + added
-        self.sorted_scores[self.n_selected-1] = lo
-        self.sorted_scores[self.n_selected] = hi
-
-        return lo < hi
+        sorted_scores = sorted(self.scores.items(), key=lambda x: x[1], reverse=True)
+        # return true if in the top k scores, there is a non selected owner
+        print('score:' + str(self.sorted_scores[self.n_selected-1]))
+        for owner in self.data_owners:
+            if owner.id in self.scores:
+                print(self.scores[owner.id])
+            if(owner.id in self.scores) and (
+                (
+                    self.scores[owner.id] in sorted_scores[0:self.n_selected] and not self.selected[owner.id]) or (
+                    self.scores[owner.id] not in sorted_scores[0:self.n_selected] and self.selected[owner.id]
+                )
+            ):
+                return True
+        return False
