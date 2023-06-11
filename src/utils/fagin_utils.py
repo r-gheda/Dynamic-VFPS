@@ -29,7 +29,6 @@ def get_sorted_distances(data_ptr, class_data, aggregation_distances):
     for data_ptr2 in class_data:
         if not (data_ptr, data_ptr2[1]) in aggregation_distances:
             continue
-        print('append')
         distances.append(aggregation_distances[(data_ptr, data_ptr2[1])])
     return sorted(distances)
 

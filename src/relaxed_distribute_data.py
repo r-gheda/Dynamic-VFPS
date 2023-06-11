@@ -1,8 +1,9 @@
 import random
 
-DATA_GENERATION_PROBABILITY = 0.001
+DATA_GENERATION_PROBABILITY = 0.0001
+MAX_DATA_LIFESPAN = 2
 
-class ContinuousDistributeMNIST:
+class RelaxedDistributeMNIST:
     """
   This class distribute each image among different workers
   It returns a dictionary with key as data owner's id and 
@@ -92,7 +93,7 @@ class ContinuousDistributeMNIST:
         for id, data_ptr, target in self:
             if random.random() <= DATA_GENERATION_PROBABILITY:
                 self.distributed_subdata.append((id, data_ptr, target))
-                self.lifetimes.append(25*random.random())
+                self.lifetimes.append(MAX_DATA_LIFESPAN*random.random())
             else:
                 self.left_out.append((id, data_ptr, target))
 
@@ -112,21 +113,24 @@ class ContinuousDistributeMNIST:
 
         DATA_UPDATE_PROBABILITY = len(removed) / (len(self) - len(self.distributed_subdata))
         added = []
-
-        for id, data_ptr, target in self.left_out:
-            if random.random() <= DATA_UPDATE_PROBABILITY:
-                self.distributed_subdata.append((id, data_ptr, target))
-                self.lifetimes.append(25*random.random())
-                added.append((id, data_ptr, target))
+        
+        res = True
+        while( res ):
+            for id, data_ptr, target in self.left_out:
+                if random.random() <= DATA_UPDATE_PROBABILITY:
+                    self.distributed_subdata.append((id, data_ptr, target))
+                    self.lifetimes.append(MAX_DATA_LIFESPAN*random.random())
+                    added.append((id, data_ptr, target))
+            res = (len(self.distributed_subdata) == 0)
         return (removed, added)
     
     def split_samples_by_class(self):
         class_data = {}
 
         for id, data_ptr, target in self.distributed_subdata:
-            if not target in class_data:
-                class_data[target] = []
-            class_data[target].append((data_ptr, id))
+            if not target.item() in class_data:
+                class_data[target.item()] = []
+            class_data[target.item()].append((data_ptr, id))
         
         return class_data
 
@@ -137,5 +141,4 @@ class ContinuousDistributeMNIST:
             if len(shared_items) > 0:
                 break
             idx += 1
-        print(len(self.data_pointer))
         return idx

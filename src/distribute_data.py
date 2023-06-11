@@ -1,8 +1,8 @@
 import random
 
-DATA_GENERATION_PROBABILITY = 0.01
+DATA_GENERATION_PROBABILITY = 0.03
 
-class Distribute_MNIST:
+class ContinuousDistributeMNIST:
     """
   This class distribute each image among different workers
   It returns a dictionary with key as data owner's id and 
@@ -45,6 +45,8 @@ class Distribute_MNIST:
 
         self.labels = []
         self.distributed_subdata = []
+        self.lifetimes = []
+        self.left_out = []
 
         # iterate over each batch of dataloader for, 1) spliting image 2) sending to VirtualWorker
         for images, labels in self.data_loader:
@@ -88,3 +90,40 @@ class Distribute_MNIST:
         for data_ptr, target in self:
             if random.random() <= DATA_GENERATION_PROBABILITY:
                 self.distributed_subdata.append((data_ptr, target))
+                self.lifetimes.append(25*random.random())
+            else:
+                self.left_out.append((data_ptr, target))
+
+    def update_subdata(self):
+        removed = []
+        idx = 0
+        
+        for data_ptr, target in self.distributed_subdata:
+            self.lifetimes[idx] -= 1
+            if self.lifetimes[idx] <= 0:
+                self.lifetimes.pop(idx)
+                self.distributed_subdata.pop(idx)
+                self.left_out.append((data_ptr, target))
+                removed.append((data_ptr, target))
+                idx -= 1
+            idx += 1
+
+        DATA_UPDATE_PROBABILITY = len(removed) / (len(self) - len(self.distributed_subdata))
+        
+        added = []
+        for data_ptr, target in self.left_out:
+            if random.random() <= DATA_UPDATE_PROBABILITY:
+                self.distributed_subdata.append((data_ptr, target))
+                self.lifetimes.append(25*random.random())
+                added.append((data_ptr, target))
+        return (removed, added)
+    
+    def split_samples_by_class(self):
+        class_data = {}
+        id1 = 0
+        for data_ptr, target in self.distributed_subdata:
+            id1 += 1
+            if not target in class_data:
+                class_data[target] = []
+            class_data[target].append((data_ptr, id1))
+        return class_data
