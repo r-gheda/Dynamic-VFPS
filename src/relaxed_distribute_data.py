@@ -1,8 +1,10 @@
 import random
 
-DATA_GENERATION_PROBABILITY = 0.01
+DATA_GENERATION_PROBABILITY = 0.001
+MIN_DATA_LIFESPAN = 1
+MAX_DATA_LIFESPAN = 50
 
-class Distribute_MNIST:
+class RelaxedDistributeMNIST:
     """
   This class distribute each image among different workers
   It returns a dictionary with key as data owner's id and 
@@ -45,6 +47,8 @@ class Distribute_MNIST:
 
         self.labels = []
         self.distributed_subdata = []
+        self.lifetimes = []
+        self.left_out = []
 
         # iterate over each batch of dataloader for, 1) spliting image 2) sending to VirtualWorker
         for images, labels in self.data_loader:
@@ -75,9 +79,11 @@ class Distribute_MNIST:
             self.data_pointer.append(curr_data_dict)
             
     def __iter__(self):
+        id = 0
         
         for data_ptr, label in zip(self.data_pointer[:-1], self.labels[:-1]):
-            yield (data_ptr, label)
+            yield (id, data_ptr, label)
+            id += 1
             
     def __len__(self):
         
@@ -85,6 +91,55 @@ class Distribute_MNIST:
             
     def generate_subdata(self):
         self.distributed_subdata = []
-        for data_ptr, target in self:
+        for id, data_ptr, target in self:
             if random.random() <= DATA_GENERATION_PROBABILITY:
-                self.distributed_subdata.append((data_ptr, target))
+                self.distributed_subdata.append((id, data_ptr, target))
+                self.lifetimes.append((MAX_DATA_LIFESPAN-MIN_DATA_LIFESPAN)*random.random() + MIN_DATA_LIFESPAN)
+            else:
+                self.left_out.append((id, data_ptr, target))
+
+    def update_subdata(self):
+        removed = []
+        idx = 0
+        
+        for id, data_ptr, target in self.distributed_subdata:
+            self.lifetimes[idx] -= 1
+            if self.lifetimes[idx] <= 0:
+                self.lifetimes.pop(idx)
+                self.distributed_subdata.pop(idx)
+                self.left_out.append((id, data_ptr, target))
+                removed.append((id, data_ptr, target))
+                idx -= 1
+            idx += 1
+
+        DATA_UPDATE_PROBABILITY = len(removed) / (len(self) - len(self.distributed_subdata))
+        added = []
+        
+        res = True
+        while( res ):
+            for id, data_ptr, target in self.left_out:
+                if random.random() <= DATA_UPDATE_PROBABILITY:
+                    self.distributed_subdata.append((id, data_ptr, target))
+                    self.lifetimes.append((MAX_DATA_LIFESPAN-MIN_DATA_LIFESPAN)*random.random() + MIN_DATA_LIFESPAN)
+                    added.append((id, data_ptr, target))
+            res = (len(self.distributed_subdata) == 0)
+        return (removed, added)
+    
+    def split_samples_by_class(self, subdata):
+        class_data = {}
+
+        for id, data_ptr, target in subdata:
+            if not target.item() in class_data:
+                class_data[target.item()] = []
+            class_data[target.item()].append((data_ptr, id))
+        
+        return class_data
+
+    def get_data_ptr_index(self, data_ptr):
+        idx = 0
+        for _ in range(len(self.data_pointer)):
+            shared_items = {owner.id: data_ptr[owner.id] for owner in self.data_owners if owner.id in self.data_pointer and self.data_ptr[owner.id] == self.data_pointer[owner.id] }
+            if len(shared_items) > 0:
+                break
+            idx += 1
+        return idx
