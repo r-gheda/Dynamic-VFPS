@@ -1,7 +1,8 @@
 import random
 
-DATA_GENERATION_PROBABILITY = 0.0001
-MAX_DATA_LIFESPAN = 2
+DATA_GENERATION_PROBABILITY = 0.001
+MIN_DATA_LIFESPAN = 1
+MAX_DATA_LIFESPAN = 50
 
 class RelaxedDistributeMNIST:
     """
@@ -93,7 +94,7 @@ class RelaxedDistributeMNIST:
         for id, data_ptr, target in self:
             if random.random() <= DATA_GENERATION_PROBABILITY:
                 self.distributed_subdata.append((id, data_ptr, target))
-                self.lifetimes.append(MAX_DATA_LIFESPAN*random.random())
+                self.lifetimes.append((MAX_DATA_LIFESPAN-MIN_DATA_LIFESPAN)*random.random() + MIN_DATA_LIFESPAN)
             else:
                 self.left_out.append((id, data_ptr, target))
 
@@ -119,15 +120,15 @@ class RelaxedDistributeMNIST:
             for id, data_ptr, target in self.left_out:
                 if random.random() <= DATA_UPDATE_PROBABILITY:
                     self.distributed_subdata.append((id, data_ptr, target))
-                    self.lifetimes.append(MAX_DATA_LIFESPAN*random.random())
+                    self.lifetimes.append((MAX_DATA_LIFESPAN-MIN_DATA_LIFESPAN)*random.random() + MIN_DATA_LIFESPAN)
                     added.append((id, data_ptr, target))
             res = (len(self.distributed_subdata) == 0)
         return (removed, added)
     
-    def split_samples_by_class(self):
+    def split_samples_by_class(self, subdata):
         class_data = {}
 
-        for id, data_ptr, target in self.distributed_subdata:
+        for id, data_ptr, target in subdata:
             if not target.item() in class_data:
                 class_data[target.item()] = []
             class_data[target.item()].append((data_ptr, id))
