@@ -14,15 +14,16 @@ import numpy as np
 import random
 import time
 
-from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma
+from src.utils.fagin_utils import split_samples_by_class, get_kth_dist, digamma, get_sorted_distances
 
 hook = sy.TorchHook(torch)
 DEFAULT_METHOD = "zeros"
-MEAN_DELAY = 1
-STD_DELAY = 3
+MEAN_DELAY = 0
+STD_DELAY = 0
+PROBABILITY_OF_TESTING = 0.5
 
-class SplitNN:
-    def __init__(self, models, server, data_owners, optimizers, padding_method=DEFAULT_METHOD):
+class DiscreteSplitNN:
+    def __init__(self, models, server, data_owners, optimizers, dist_data, k, n_selected, padding_method=DEFAULT_METHOD):
         self.models = models
         self.server = server
         self.data_owners = data_owners
@@ -40,7 +41,14 @@ class SplitNN:
             self.counters[owner.id] = 0
 
         self.classes = None
-        self.k = 1
+        self.k = k
+        self.n_selected = n_selected
+        self.dist_data = dist_data
+
+        self.Q = 1
+        self.N = len(self.dist_data)
+        self.Nq = {}
+        self.mq = {}
         
     def generate_data(self, owner, remote_outputs):
         res = None
@@ -53,7 +61,7 @@ class SplitNN:
                 self.PADDING_METHOD = DEFAULT_METHOD
             res = self.means[owner.id]
         elif self.PADDING_METHOD == "zeros":
-            res = torch.zeros([64, 64])
+            res = torch.zeros([1, 32])
         else:
             raise Exception("Padding method not supported")
         return res
@@ -69,7 +77,7 @@ class SplitNN:
         for owner in self.data_owners:
             if self.selected[owner.id]:
                 remote_outputs.append(
-                    self.models[owner.id](data_pointer[owner.id].reshape([-1, 14*28])).move(self.server)
+                    self.models[owner.id](data_pointer[owner.id].reshape([-1, 7*28])).move(self.server)
                 )
                 delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
 
@@ -114,7 +122,7 @@ class SplitNN:
         
         #calculate loss
         criterion = nn.NLLLoss()
-        loss = criterion(pred, target.reshape(-1, 64)[0])
+        loss = criterion(pred, target.reshape(-1, 1)[0])
         
         #backpropagate
         loss.backward()
@@ -126,15 +134,13 @@ class SplitNN:
             
         return loss.detach().get()
 
-    def knn_mi_estimator(self, distributed_data):
-        class_data = split_samples_by_class(distributed_data)
+    def knn_mi_estimator(self, distributed_subdata):
+        self.class_data = self.dist_data.split_samples_by_class(distributed_subdata)
         aggregate_distances = {}
         distances = {}
     
-        id1 = 0
-        for data_ptr, target in distributed_data:
-            id2 = 0
-            for data_ptr2, _ in distributed_data:
+        for id1, data_ptr, target in distributed_subdata:
+            for id2, data_ptr2, _ in distributed_subdata:
                 remote_partials = []
                 delays = []
                 for owner in self.data_owners:
@@ -147,27 +153,31 @@ class SplitNN:
                     distances[(owner, id1, id2)] = part_dist
                     remote_partials.append(part_dist.move(self.server))
                     delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
-                # wait for all partials to arrive
+                # wait for all partial distances to arrive
                 time.sleep(max(delays))
-                aggregate_distances[(id1, id2)] = 0
+                aggregate_distances[id1, id2] = 0
                 for rp in remote_partials:
-                    aggregate_distances[(id1, id2)] += torch.sum(rp)
-                id2 += 1
-            id1 += 1
+                    aggregate_distances[id1, id2] += torch.sum(rp)
 
         mi = 0
-        id1 = 0
-        for data_ptr, target in distributed_data:
-            kth_nearest = get_kth_dist(id1, class_data[target], aggregate_distances, self.k)
-            m = [0 for i in range(len(distributed_data)) if aggregate_distances[(id1, i)] < kth_nearest]
-            mi += digamma(len(distributed_data)) + digamma(len(class_data)) + digamma(self.k) - digamma(len(m))
-            id1 += 1
-        return mi / len(distributed_data)
-    
-    def group_testing(self, distributed_data, k, n_tests=100):
-        scores = self.get_scores(distributed_data, n_tests)
+        for id1, data_ptr, target in distributed_subdata:
+            self.Nq[target.item()] = len(self.class_data[target.item()])
+            sorted_distances = get_sorted_distances(id1, self.class_data[target.item()], aggregate_distances)
+           
+            self.mq[id1] = len([0 for id2, _, _ in distributed_subdata if (
+                len(sorted_distances) > 0
+            ) and (
+                aggregate_distances[id1, id2] < sorted_distances[min(self.k, len(sorted_distances)-1)]
+            )])
+            if self.mq[id1] > 0:
+                mi += digamma(self.N) - digamma(self.Nq[target.item()]) + digamma(self.k) - digamma(self.mq[id1])
 
-        for _ in range(k):
+        return mi / self.Q
+    
+    def group_testing(self, n_tests=100):
+        scores = self.get_scores(n_tests)
+
+        for _ in range(self.n_selected):
             max_owner = max(scores, key=scores.get)
             self.selected[max_owner] = True
             scores.pop(max_owner)
@@ -177,19 +187,19 @@ class SplitNN:
         
         return
 
-    def get_scores(self, distributed_data, n_tests=100):
+    def get_scores(self, n_tests=100):
         self.scores = {}
         for _ in range(n_tests):
             # random select from self.data_owners
-            test_instance = self.test_gen()
+            test_instance = self.test_gen(PROBABILITY_OF_TESTING)
             
             distributed_data_split = []
-            for data_ptr, target in distributed_data:
-                distributed_data_split.append( (data_ptr.copy(), target) )
+            for id, data_ptr, target in self.dist_data.distributed_subdata:
+                distributed_data_split.append( (id, data_ptr.copy(), target) )
 
             for owner in self.data_owners:
                 if not owner in test_instance:
-                    for data_ptr, _ in distributed_data_split:
+                    for _, data_ptr, _ in distributed_data_split:
                         data_ptr.pop(owner.id)
             
             mi = self.knn_mi_estimator(distributed_data_split)

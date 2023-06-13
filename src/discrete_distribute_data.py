@@ -1,8 +1,8 @@
 import random
 
-DATA_GENERATION_PROBABILITY = 0.01
+DATA_GENERATION_PROBABILITY = 0.001
 
-class Distribute_MNIST:
+class DiscreteDistributeMNIST:
     """
   This class distribute each image among different workers
   It returns a dictionary with key as data owner's id and 
@@ -75,9 +75,11 @@ class Distribute_MNIST:
             self.data_pointer.append(curr_data_dict)
             
     def __iter__(self):
-        
+        id = 0
+
         for data_ptr, label in zip(self.data_pointer[:-1], self.labels[:-1]):
-            yield (data_ptr, label)
+            yield (id, data_ptr, label)
+            id += 1
             
     def __len__(self):
         
@@ -85,6 +87,16 @@ class Distribute_MNIST:
             
     def generate_subdata(self):
         self.distributed_subdata = []
-        for data_ptr, target in self:
+        for id, data_ptr, target in self:
             if random.random() <= DATA_GENERATION_PROBABILITY:
-                self.distributed_subdata.append((data_ptr, target))
+                self.distributed_subdata.append((id, data_ptr, target))
+
+    def split_samples_by_class(self, subdata):
+        class_data = {}
+
+        for id, data_ptr, target in subdata:
+            if not target.item() in class_data:
+                class_data[target.item()] = []
+            class_data[target.item()].append((data_ptr, id))
+        
+        return class_data
