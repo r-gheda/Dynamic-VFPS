@@ -7,7 +7,7 @@ GROUP_TESTING_ROUNDS = 5
 import sys
 sys.path.append('../')
 
-import matplotlib as plt
+import matplotlib.pyploy as plt
 import torch
 from torchvision import datasets, transforms
 from torch import nn, optim
@@ -116,11 +116,12 @@ for i in range(EPOCHS):
         label = label.send(server)
         loss = splitNN.train(data_ptr, label)
         running_loss += loss
-    performance.append(running_loss/len(distributed_trainloader.distributed_subdata))
     removed, added = distributed_trainloader.update_subdata()
+    performance.append((running_loss/len(distributed_trainloader.distributed_subdata)).item())
     print("Epoch {} - Training loss: {}".format(i, running_loss/len(distributed_trainloader.distributed_subdata)))
 
-plt.plot(performance)
+print(performance)
+plt.plot(range(1, EPOCHS+1), performance)
 plt.ylabel('Training loss')
 plt.xlabel('Epoch')
 plt.show()

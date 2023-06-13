@@ -8,7 +8,7 @@ GROUP_TESTING_ROUNDS = 5
 import sys
 sys.path.append('../')
 
-import matplotlib as plt
+import matplotlib.pyplot as plt
 import torch
 from torchvision import datasets, transforms
 from torch import nn, optim
@@ -107,7 +107,7 @@ for i in range(EPOCHS):
     running_loss = 0
     if (random.random() < SUBSET_UPDATE_PROB):
         distributed_trainloader.generate_subdata()
-        splitNN.group_testing(GORUP_TESTING_ROUNDS)
+        splitNN.group_testing(GROUP_TESTING_ROUNDS)
     
     #iterate over each datapoint 
     for _, data_ptr, label in distributed_trainloader.distributed_subdata:
@@ -117,10 +117,11 @@ for i in range(EPOCHS):
         
         loss = splitNN.train(data_ptr, label)
         running_loss += loss
-    performance.append(running_loss/len(distributed_trainloader.distributed_subdata))
+    performance.append((running_loss/len(distributed_trainloader.distributed_subdata)).item())
     print("Epoch {} - Training loss: {}".format(i, running_loss/len(distributed_trainloader.distributed_subdata)))
 
-plt.plot(performance)
+print(performance)
+plt.plot(range(1, EPOCHS+1), performance)
 plt.ylabel('Training loss')
 plt.xlabel('Epoch')
 plt.show()
