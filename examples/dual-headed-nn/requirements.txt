@@ -1,3 +1,0 @@
-openmined.psi
-syft
-jupyterlab
