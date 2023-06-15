@@ -53,11 +53,11 @@ class DiscreteSplitNN:
     def generate_data(self, owner, remote_outputs):
         res = None
         if self.PADDING_METHOD == "latest":
-            if owner.id in self.latest:
+            if not owner.id in self.latest:
                 self.PADDING_METHOD = DEFAULT_METHOD
             res = self.latest[owner.id]
         elif self.PADDING_METHOD == "mean": 
-            if owner.id in self.means:
+            if not owner.id in self.means:
                 self.PADDING_METHOD = DEFAULT_METHOD
             res = self.means[owner.id]
         elif self.PADDING_METHOD == "zeros":
@@ -133,6 +133,15 @@ class DiscreteSplitNN:
                 opt[0].step()
             
         return loss.detach().get()
+    
+    def eval(self, data_pointer, target):
+        pred = self.predict(data_pointer)
+        
+        #calculate loss
+        criterion = nn.NLLLoss()
+        loss = criterion(pred, target.reshape(-1, 1)[0])
+        
+        return loss.detach().get()
 
     def knn_mi_estimator(self, distributed_subdata):
         self.class_data = self.dist_data.split_samples_by_class(distributed_subdata)
@@ -151,6 +160,7 @@ class DiscreteSplitNN:
                     else:
                         part_dist = torch.cdist(data_ptr[owner.id], data_ptr2[owner.id])
                     distances[(owner, id1, id2)] = part_dist
+                    self.local_scores[owner.id] = [part_dist]
                     remote_partials.append(part_dist.move(self.server))
                     delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
                 # wait for all partial distances to arrive
@@ -189,12 +199,14 @@ class DiscreteSplitNN:
 
     def get_scores(self, n_tests=100):
         self.scores = {}
+        estimate_subdata = self.dist_data.generate_estimate_subdata()
+        self.local_scores = {}
         for _ in range(n_tests):
             # random select from self.data_owners
             test_instance = self.test_gen(PROBABILITY_OF_TESTING)
             
             distributed_data_split = []
-            for id, data_ptr, target in self.dist_data.distributed_subdata:
+            for id, data_ptr, target in estimate_subdata:
                 distributed_data_split.append( (id, data_ptr.copy(), target) )
 
             for owner in self.data_owners:

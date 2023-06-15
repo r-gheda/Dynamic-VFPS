@@ -212,18 +212,16 @@ class SplitNN:
             self.sorted_distances[id1] = get_sorted_distances(id1, self.class_data[target.item()], self.aggregated_distances)       
         return
 
-    def get_scores(self, n_tests=10):
-        self.n_tests_per_owner = {}
-        for owner in self.data_owners:
-            self.n_tests_per_owner[owner.id] = 0
-
+    def get_scores(self, n_tests=100):
         self.scores = {}
+        estimate_subdata = self.dist_data.generate_estimate_subdata()
+        self.local_scores = {}
         for _ in range(n_tests):
             # random select from self.data_owners
             test_instance = self.test_gen(PROBABILITY_OF_TESTING)
             
             distributed_data_split = []
-            for id, data_ptr, target in self.dist_data.distributed_subdata:
+            for id, data_ptr, target in estimate_subdata:
                 distributed_data_split.append( (id, data_ptr.copy(), target) )
 
             for owner in self.data_owners:
@@ -233,13 +231,11 @@ class SplitNN:
             
             mi = self.knn_mi_estimator(distributed_data_split)
             for owner in test_instance:
-                self.n_tests_per_owner[owner.id] += 1
                 if owner not in self.scores:
-                    self.scores[owner.id] = 0
-                self.scores[owner.id] += mi
+                    self.scores[owner] = 0
+                self.scores[owner] += mi
         
         self.scores = {k: v / n_tests for k, v in self.scores.items()}
-        print(self.scores)
         return self.scores
     
     def test_gen(self, p=0.5):

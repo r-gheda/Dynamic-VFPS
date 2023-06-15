@@ -1,6 +1,9 @@
 import random
 
-DATA_GENERATION_PROBABILITY = 0.001
+DATA_GENERATION_PROBABILITY = 0.05
+TEST_SET_SIZE = 1000
+TESTING_GEN_SEED = 10
+ESTIMATION_DATA_GENERATION_PROBABILITY = 0.02
 
 class DiscreteDistributeMNIST:
     """
@@ -26,6 +29,7 @@ class DiscreteDistributeMNIST:
           data_loader: torch.utils.data.DataLoader for MNIST 
 
         """
+        random.seed(10)
 
         self.data_owners = data_owners
         self.data_loader = data_loader
@@ -45,6 +49,7 @@ class DiscreteDistributeMNIST:
 
         self.labels = []
         self.distributed_subdata = []
+        self.test_set = []
 
         # iterate over each batch of dataloader for, 1) spliting image 2) sending to VirtualWorker
         for images, labels in self.data_loader:
@@ -74,6 +79,12 @@ class DiscreteDistributeMNIST:
 
             self.data_pointer.append(curr_data_dict)
             
+        for _ in range(TEST_SET_SIZE):
+            idx = random.random()*len(self.data_pointer)
+            self.test_set.append((self.data_pointer[int(idx)], self.labels[int(idx)]))
+            self.data_pointer.pop(int(idx))
+            self.labels.pop(int(idx))
+            
     def __iter__(self):
         id = 0
 
@@ -90,6 +101,13 @@ class DiscreteDistributeMNIST:
         for id, data_ptr, target in self:
             if random.random() <= DATA_GENERATION_PROBABILITY:
                 self.distributed_subdata.append((id, data_ptr, target))
+
+    def generate_estimate_subdata(self):
+        est_subdata = []
+        for id, data_ptr, target in self.distributed_subdata:
+            if random.random() <= ESTIMATION_DATA_GENERATION_PROBABILITY:
+                est_subdata.append((id, data_ptr, target))
+        return est_subdata
 
     def split_samples_by_class(self, subdata):
         class_data = {}

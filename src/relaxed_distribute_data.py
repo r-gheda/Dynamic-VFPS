@@ -1,8 +1,9 @@
 import random
 
-DATA_GENERATION_PROBABILITY = 0.001
+DATA_GENERATION_PROBABILITY = 0.05
 MIN_DATA_LIFESPAN = 1
 MAX_DATA_LIFESPAN = 50
+ESTIMATION_DATA_GENERATION_PROBABILITY = 0.02
 
 class RelaxedDistributeMNIST:
     """
@@ -97,6 +98,13 @@ class RelaxedDistributeMNIST:
                 self.lifetimes.append((MAX_DATA_LIFESPAN-MIN_DATA_LIFESPAN)*random.random() + MIN_DATA_LIFESPAN)
             else:
                 self.left_out.append((id, data_ptr, target))
+
+    def generate_estimate_subdata(self):
+        est_subdata = []
+        for id, data_ptr, target in self.distributed_subdata:
+            if random.random() <= ESTIMATION_DATA_GENERATION_PROBABILITY:
+                est_subdata.append((id, data_ptr, target))
+        return est_subdata
 
     def update_subdata(self):
         removed = []

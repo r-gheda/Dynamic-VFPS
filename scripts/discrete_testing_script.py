@@ -1,9 +1,9 @@
-EPOCHS = 1000
+EPOCHS = 100
 SUBSET_UPDATE_PROB = 0.2
 PADDING_METHOD = "zeros"
 LEARNING_RATE = 0.05
 GROUP_TESTING_ROUNDS = 5
-
+res = []
 
 import sys
 sys.path.append('../')
@@ -97,17 +97,21 @@ for location in model_locations:
 
 
 #Instantiate a SpliNN class with our distributed segments and their respective optimizers
-splitNN = DiscreteSplitNN(models, server, data_owners, optimizers, distributed_trainloader, k=3, n_selected=1, padding_method=PADDING_METHOD)
+splitNN = DiscreteSplitNN(models, server, data_owners, optimizers, distributed_trainloader, k=5, n_selected=2, padding_method=PADDING_METHOD)
 
 distributed_trainloader.generate_subdata()
-splitNN.group_testing(GROUP_TESTING_ROUNDS)
+# splitNN.group_testing(GROUP_TESTING_ROUNDS)
 
+test_perf = []
 performance = []
+print(len(distributed_trainloader.distributed_subdata))
+print(len(distributed_trainloader.test_set))
 for i in range(EPOCHS):
     running_loss = 0
+    test_loss = 0
     if (random.random() < SUBSET_UPDATE_PROB):
         distributed_trainloader.generate_subdata()
-        splitNN.group_testing(GROUP_TESTING_ROUNDS)
+        # splitNN.group_testing(GROUP_TESTING_ROUNDS)
     
     #iterate over each datapoint 
     for _, data_ptr, label in distributed_trainloader.distributed_subdata:
@@ -117,11 +121,27 @@ for i in range(EPOCHS):
         
         loss = splitNN.train(data_ptr, label)
         running_loss += loss
+    
+    for data_ptr, label in distributed_trainloader.test_set:
+        label = label.send(server)
+        
+        loss = splitNN.eval(data_ptr, label)
+        test_loss += loss
+    
+    test_perf.append((test_loss/len(distributed_trainloader.test_set)).item())
     performance.append((running_loss/len(distributed_trainloader.distributed_subdata)).item())
     print("Epoch {} - Training loss: {}".format(i, running_loss/len(distributed_trainloader.distributed_subdata)))
+    print("Epoch {} - Test loss: {}".format(i, test_loss/len(distributed_trainloader.test_set)))
+
 
 print(performance)
+res.append(performance)
 plt.plot(range(1, EPOCHS+1), performance)
 plt.ylabel('Training loss')
+plt.xlabel('Epoch')
+plt.show()
+
+plt.plot(range(1, EPOCHS+1), test_perf)
+plt.ylabel('Test loss')
 plt.xlabel('Epoch')
 plt.show()
