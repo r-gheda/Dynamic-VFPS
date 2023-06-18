@@ -21,6 +21,8 @@ DEFAULT_METHOD = "zeros"
 MEAN_DELAY = 0
 STD_DELAY = 0
 PROBABILITY_OF_TESTING = 0.5
+PROBABILITY_OF_PICKING = 0.5
+METHOD = 'RANDOM'
 
 class DiscreteSplitNN:
     def __init__(self, models, server, data_owners, optimizers, dist_data, k, n_selected, padding_method=DEFAULT_METHOD):
@@ -36,6 +38,7 @@ class DiscreteSplitNN:
         self.PADDING_METHOD = padding_method
         self.latest = {}
         self.means = {}
+        self.wei = {}
         self.counters = {}
         for owner in self.data_owners:
             self.counters[owner.id] = 0
@@ -49,19 +52,29 @@ class DiscreteSplitNN:
         self.N = len(self.dist_data)
         self.Nq = {}
         self.mq = {}
+        self.seed_count = 1
         
     def generate_data(self, owner, remote_outputs):
         res = None
         if self.PADDING_METHOD == "latest":
             if not owner.id in self.latest:
                 self.PADDING_METHOD = DEFAULT_METHOD
-            res = self.latest[owner.id]
-        elif self.PADDING_METHOD == "mean": 
+            else:
+                print('latest')
+                res = self.latest[owner.id]
+        if self.PADDING_METHOD == "mean": 
             if not owner.id in self.means:
                 self.PADDING_METHOD = DEFAULT_METHOD
-            res = self.means[owner.id]
-        elif self.PADDING_METHOD == "zeros":
-            res = torch.zeros([1, 32])
+            else:
+                res = self.means[owner.id]
+        if self.PADDING_METHOD == "wei": 
+            if not owner.id in self.means:
+                self.PADDING_METHOD = DEFAULT_METHOD
+            else:
+                res = self.wei[owner.id]
+        
+        if self.PADDING_METHOD == "zeros":
+            res = torch.zeros([64, 32])
         else:
             raise Exception("Padding method not supported")
         return res
@@ -90,6 +103,11 @@ class DiscreteSplitNN:
                     self.means[owner.id] = remote_outputs[-1]
                 else:
                     self.means[owner.id] = torch.div(torch.add(torch.mul(self.means[owner.id], self.counters[owner.id]-1), remote_outputs[-1]), float(self.counters[owner.id]))
+                # wei padding update
+                if not owner.id in self.wei:
+                    self.wei[owner.id] = remote_outputs[-1]
+                else:
+                    self.wei[owner.id] = torch.add(torch.mul(self.means[owner.id], 0.5), torch.div(remote_outputs[-1], 2))
             
             else:
                 missing.append(counter)
@@ -122,7 +140,7 @@ class DiscreteSplitNN:
         
         #calculate loss
         criterion = nn.NLLLoss()
-        loss = criterion(pred, target.reshape(-1, 1)[0])
+        loss = criterion(pred, target.reshape(-1, 64)[0])
         
         #backpropagate
         loss.backward()
@@ -139,7 +157,7 @@ class DiscreteSplitNN:
         
         #calculate loss
         criterion = nn.NLLLoss()
-        loss = criterion(pred, target.reshape(-1, 1)[0])
+        loss = criterion(pred, target.reshape(-1, 64)[0])
         
         return loss.detach().get()
 
@@ -185,16 +203,22 @@ class DiscreteSplitNN:
         return mi / self.Q
     
     def group_testing(self, n_tests=100):
-        scores = self.get_scores(n_tests)
-
-        for _ in range(self.n_selected):
-            max_owner = max(scores, key=scores.get)
-            self.selected[max_owner] = True
-            scores.pop(max_owner)
-        
-        for owner in scores:
-            self.selected[owner] = False
-        
+        self.seed_count += 1
+        random.seed(self.seed_count)
+        for own in self.data_owners:
+            self.selected[own.id] = False
+        if METHOD == 'RANDOM':
+            while(sum([self.selected[ow] for ow in self.selected]) != self.n_selected + 1):
+                for own in self.data_owners:
+                    if random.random() < PROBABILITY_OF_PICKING:
+                        self.selected[own.id] = True
+                    else:
+                        self.selected[own.id] = False
+        else:
+            self.selected[self.data_owners[0].id] = False
+            self.selected[self.data_owners[1].id] = True
+            self.selected[self.data_owners[2].id] = True
+            self.selected[self.data_owners[3].id] = False
         return
 
     def get_scores(self, n_tests=100):

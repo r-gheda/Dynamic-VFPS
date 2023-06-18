@@ -1,7 +1,7 @@
-EPOCHS = 100
+EPOCHS = 500
 SUBSET_UPDATE_PROB = 0.2
-PADDING_METHOD = "zeros"
-LEARNING_RATE = 0.05
+PADDING_METHOD = "latest"
+LEARNING_RATE = 0.3
 GROUP_TESTING_ROUNDS = 5
 res = []
 
@@ -17,6 +17,7 @@ from torchvision.transforms import ToTensor
 
 import syft as sy
 import random
+from time import process_time
 
 from src.psi.util import Client, Server
 from src.discrete_splitnn import DiscreteSplitNN
@@ -30,7 +31,8 @@ transform = transforms.Compose([transforms.ToTensor(),
                               transforms.Normalize((0.5,), (0.5,)),
                               ])
 trainset = datasets.MNIST('mnist', download=True, train=True, transform=transform)
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=1, shuffle=True)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=64
+                                          , shuffle=True)
 
 # create some workers
 client_1 = sy.VirtualWorker(hook, id="client_1")
@@ -97,21 +99,35 @@ for location in model_locations:
 
 
 #Instantiate a SpliNN class with our distributed segments and their respective optimizers
-splitNN = DiscreteSplitNN(models, server, data_owners, optimizers, distributed_trainloader, k=5, n_selected=2, padding_method=PADDING_METHOD)
+splitNN = DiscreteSplitNN(models, server, data_owners, optimizers, distributed_trainloader, k=10, n_selected=2, padding_method=PADDING_METHOD)
 
 distributed_trainloader.generate_subdata()
-# splitNN.group_testing(GROUP_TESTING_ROUNDS)
-
+s = process_time()
+splitNN.group_testing(GROUP_TESTING_ROUNDS)
+print('group testing: ' + str(process_time() - s))
 test_perf = []
 performance = []
 print(len(distributed_trainloader.distributed_subdata))
 print(len(distributed_trainloader.test_set))
 for i in range(EPOCHS):
+    s = process_time()
+    if (i > 0) and (i % 50 == 0):
+        plt.plot(range(1, i+1), performance)
+        plt.ylabel('Training loss')
+        plt.xlabel('Epoch')
+        plt.ylim([0,3])
+        plt.show()
+
+        plt.plot(range(1, i+1), test_perf)
+        plt.ylabel('Test loss')
+        plt.xlabel('Epoch')
+        plt.ylim([0,3])
+        plt.show()
     running_loss = 0
     test_loss = 0
     if (random.random() < SUBSET_UPDATE_PROB):
         distributed_trainloader.generate_subdata()
-        # splitNN.group_testing(GROUP_TESTING_ROUNDS)
+        splitNN.group_testing(GROUP_TESTING_ROUNDS)
     
     #iterate over each datapoint 
     for _, data_ptr, label in distributed_trainloader.distributed_subdata:
@@ -132,6 +148,8 @@ for i in range(EPOCHS):
     performance.append((running_loss/len(distributed_trainloader.distributed_subdata)).item())
     print("Epoch {} - Training loss: {}".format(i, running_loss/len(distributed_trainloader.distributed_subdata)))
     print("Epoch {} - Test loss: {}".format(i, test_loss/len(distributed_trainloader.test_set)))
+    print('Epoch time: ' + str(process_time() - s))
+
 
 
 print(performance)
@@ -139,9 +157,12 @@ res.append(performance)
 plt.plot(range(1, EPOCHS+1), performance)
 plt.ylabel('Training loss')
 plt.xlabel('Epoch')
+plt.ylim([0,3])
 plt.show()
 
 plt.plot(range(1, EPOCHS+1), test_perf)
 plt.ylabel('Test loss')
 plt.xlabel('Epoch')
+plt.ylim([0,3])
 plt.show()
+
