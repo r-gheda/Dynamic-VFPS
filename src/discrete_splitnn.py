@@ -8,7 +8,7 @@ Server owns the labels
 
 import syft as sy
 import torch
-from torch import nn
+from torch import nn, Tensor
 import torch.distributed as dist
 import numpy as np
 import random
@@ -58,23 +58,21 @@ class DiscreteSplitNN:
         res = None
         if self.PADDING_METHOD == "latest":
             if not owner.id in self.latest:
-                self.PADDING_METHOD = DEFAULT_METHOD
+                res = torch.zeros([64, 64]).send(self.server)
             else:
-                print('latest')
                 res = self.latest[owner.id]
-        if self.PADDING_METHOD == "mean": 
+        elif self.PADDING_METHOD == "mean": 
             if not owner.id in self.means:
-                self.PADDING_METHOD = DEFAULT_METHOD
+                res = torch.zeros([64, 64]).send(self.server)
             else:
                 res = self.means[owner.id]
-        if self.PADDING_METHOD == "wei": 
+        elif self.PADDING_METHOD == "wei": 
             if not owner.id in self.means:
-                self.PADDING_METHOD = DEFAULT_METHOD
+                res = torch.zeros([64, 64]).send(self.server)
             else:
                 res = self.wei[owner.id]
-        
-        if self.PADDING_METHOD == "zeros":
-            res = torch.zeros([64, 32])
+        elif self.PADDING_METHOD == "zeros":
+            res = torch.zeros([64, 64]).send(self.server)
         else:
             raise Exception("Padding method not supported")
         return res
@@ -95,7 +93,7 @@ class DiscreteSplitNN:
                 delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
 
                 # latest padding update
-                self.latest[owner.id] = remote_outputs[-1]
+                self.latest[owner.id] = Tensor.copy(remote_outputs[-1])
 
                 # mean padding update
                 self.counters[owner.id] += 1
@@ -108,14 +106,13 @@ class DiscreteSplitNN:
                     self.wei[owner.id] = remote_outputs[-1]
                 else:
                     self.wei[owner.id] = torch.add(torch.mul(self.means[owner.id], 0.5), torch.div(remote_outputs[-1], 2))
-            
             else:
                 missing.append(counter)
             counter += 1
 
         for miss_index in missing:
             remote_outputs.insert(
-                miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs).send(self.server)
+                miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs)
             )
         
         # wait for all outputs to arrive
@@ -257,3 +254,6 @@ class DiscreteSplitNN:
                     test_list.append(owner)
 
         return test_list
+    
+    def set_lr(self, optimizer):
+        self.optimizers = optimizer
