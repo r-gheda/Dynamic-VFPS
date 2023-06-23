@@ -56,18 +56,25 @@ class SplitNN:
         res = None
         if self.PADDING_METHOD == "latest":
             if not owner.id in self.latest:
-                self.PADDING_METHOD = DEFAULT_METHOD
+                res = torch.zeros([64, 64]).send(self.server)
             else:
                 res = self.latest[owner.id]
-        if self.PADDING_METHOD == "mean": 
+        elif self.PADDING_METHOD == "mean": 
             if not owner.id in self.means:
-                self.PADDING_METHOD = DEFAULT_METHOD
+                res = torch.zeros([64, 64]).send(self.server)
             else:
                 res = self.means[owner.id]
-        if self.PADDING_METHOD == "zeros":
-            res = torch.zeros([1, 32])
+        elif self.PADDING_METHOD == "wei": 
+            if not owner.id in self.means:
+                res = torch.zeros([64, 64]).send(self.server)
+            else:
+                res = self.wei[owner.id]
+        elif self.PADDING_METHOD == "zeros":
+            res = torch.zeros([64, 64]).send(self.server)
+        else:
+            raise Exception("Padding method not supported")
         return res
-
+    
     def predict(self, data_pointer):        
         #outputs that is moved to server and subjected to concatenate for server input
         remote_outputs = []
