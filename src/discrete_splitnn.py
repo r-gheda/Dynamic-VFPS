@@ -8,7 +8,7 @@ Server owns the labels
 
 import syft as sy
 import torch
-from torch import nn, Tensor
+from torch import nn
 import torch.distributed as dist
 import numpy as np
 import random
@@ -21,8 +21,6 @@ DEFAULT_METHOD = "zeros"
 MEAN_DELAY = 0
 STD_DELAY = 0
 PROBABILITY_OF_TESTING = 0.5
-PROBABILITY_OF_PICKING = 0.5
-METHOD = 'RANDOM'
 
 class DiscreteSplitNN:
     def __init__(self, models, server, data_owners, optimizers, dist_data, k, n_selected, padding_method=DEFAULT_METHOD):
@@ -38,7 +36,6 @@ class DiscreteSplitNN:
         self.PADDING_METHOD = padding_method
         self.latest = {}
         self.means = {}
-        self.wei = {}
         self.counters = {}
         for owner in self.data_owners:
             self.counters[owner.id] = 0
@@ -52,7 +49,6 @@ class DiscreteSplitNN:
         self.N = len(self.dist_data)
         self.Nq = {}
         self.mq = {}
-        self.seed_count = 1
         
     def generate_data(self, owner, remote_outputs):
         res = None
@@ -93,7 +89,7 @@ class DiscreteSplitNN:
                 delays.append(max(random.gauss(MEAN_DELAY, STD_DELAY), 0))
 
                 # latest padding update
-                self.latest[owner.id] = Tensor.copy(remote_outputs[-1])
+                self.latest[owner.id] = remote_outputs[-1]
 
                 # mean padding update
                 self.counters[owner.id] += 1
@@ -101,18 +97,14 @@ class DiscreteSplitNN:
                     self.means[owner.id] = remote_outputs[-1]
                 else:
                     self.means[owner.id] = torch.div(torch.add(torch.mul(self.means[owner.id], self.counters[owner.id]-1), remote_outputs[-1]), float(self.counters[owner.id]))
-                # wei padding update
-                if not owner.id in self.wei:
-                    self.wei[owner.id] = remote_outputs[-1]
-                else:
-                    self.wei[owner.id] = torch.add(torch.mul(self.means[owner.id], 0.5), torch.div(remote_outputs[-1], 2))
+            
             else:
                 missing.append(counter)
             counter += 1
 
         for miss_index in missing:
             remote_outputs.insert(
-                miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs)
+                miss_index, self.generate_data(self.data_owners[miss_index], remote_outputs).send(self.server)
             )
         
         # wait for all outputs to arrive
@@ -137,7 +129,7 @@ class DiscreteSplitNN:
         
         #calculate loss
         criterion = nn.NLLLoss()
-        loss = criterion(pred, target.reshape(-1, 64)[0])
+        loss = criterion(pred, target.reshape(-1, 1)[0])
         
         #backpropagate
         loss.backward()
@@ -154,7 +146,7 @@ class DiscreteSplitNN:
         
         #calculate loss
         criterion = nn.NLLLoss()
-        loss = criterion(pred, target.reshape(-1, 64)[0])
+        loss = criterion(pred, target.reshape(-1, 1)[0])
         
         return loss.detach().get()
 
@@ -200,22 +192,16 @@ class DiscreteSplitNN:
         return mi / self.Q
     
     def group_testing(self, n_tests=100):
-        self.seed_count += 1
-        random.seed(self.seed_count)
-        for own in self.data_owners:
-            self.selected[own.id] = False
-        if METHOD == 'RANDOM':
-            while(sum([self.selected[ow] for ow in self.selected]) != self.n_selected + 1):
-                for own in self.data_owners:
-                    if random.random() < PROBABILITY_OF_PICKING:
-                        self.selected[own.id] = True
-                    else:
-                        self.selected[own.id] = False
-        else:
-            self.selected[self.data_owners[0].id] = False
-            self.selected[self.data_owners[1].id] = True
-            self.selected[self.data_owners[2].id] = True
-            self.selected[self.data_owners[3].id] = False
+        scores = self.get_scores(n_tests)
+
+        for _ in range(self.n_selected):
+            max_owner = max(scores, key=scores.get)
+            self.selected[max_owner] = True
+            scores.pop(max_owner)
+        
+        for owner in scores:
+            self.selected[owner] = False
+        
         return
 
     def get_scores(self, n_tests=100):
@@ -254,6 +240,3 @@ class DiscreteSplitNN:
                     test_list.append(owner)
 
         return test_list
-    
-    def set_lr(self, optimizer):
-        self.optimizers = optimizer
