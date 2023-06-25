@@ -15,8 +15,6 @@ This framework design took inspiration from the [PySyft](https://blog.openmined.
 - Dynamic VFL system support (More details below)
 - Some minor dependencies fixes for Python packages' requirements
 
-<img src="images/multi-client-splitnn.png" width="400" height="500"/> 
-
 ## Contributions
 
 This work is an improvement on paper: "[VF-PS: How to Select Important Participants in Vertical Federated Learning, Efficiently and Securely?](https://openreview.net/forum?id=vNrSXIFJ9wz)".
